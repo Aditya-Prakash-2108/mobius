@@ -29,6 +29,12 @@ func NewViewFileTool(workDir string) *ViewFileTool {
 	}
 }
 
+func (v *ViewFileTool) SetWorkingDir(dir string) {
+	if v != nil {
+		v.WorkingDir = dir
+	}
+}
+
 // Name returns the tool identifier "view_file".
 func (v *ViewFileTool) Name() string {
 	return "view_file"

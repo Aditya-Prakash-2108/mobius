@@ -6,14 +6,12 @@ import (
 	"mobius/pkg/agent"
 	"mobius/pkg/cli"
 	"mobius/pkg/events"
-	"mobius/pkg/guides"
 	"mobius/pkg/llm"
 	"mobius/pkg/orchestrator"
 	"mobius/pkg/roles"
-	"mobius/pkg/sensors"
-	"mobius/pkg/session"
 	"mobius/pkg/tools"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/joho/godotenv"
@@ -21,7 +19,8 @@ import (
 
 func main() {
 	_ = godotenv.Load()
-	registry := tools.NewDefaultRegistry(".")
+	workDir, args := workDirFromArgs(os.Args[1:])
+	registry := tools.NewDefaultRegistry(workDir)
 
 	eventStore, err := events.NewFileEventStore(".mobius/events", 256)
 	if err != nil {
@@ -45,6 +44,14 @@ func main() {
 		os.Exit(1)
 	}
 
+	if err := llm.LoadExtraModels(cfg, ""); err != nil {
+		fmt.Printf("Error: extra models: %v\n", err)
+	}
+	if conns, active, err := llm.LoadSaved(""); err == nil {
+		cfg.ImportConnections(conns, active)
+	} else if !os.IsNotExist(err) {
+		fmt.Printf("Error: saved API connections: %v\n", err)
+	}
 	provider, err := cfg.GetProviderForModel("")
 	if err != nil {
 		fmt.Printf("Error: Failed to get provider: %v\n", err)
@@ -64,47 +71,43 @@ func main() {
 	}
 
 	ctx := context.Background()
-	defaultWS, err := orchestrator.NewWorkspace(ctx, "default", roleStore, registry, model, factory)
+	app, err := cli.Boot(ctx, roleStore, registry, model, factory, eventStore, cfg, workDir)
 	if err != nil {
-		fmt.Printf("Error: Failed to create workspace: %v\n", err)
+		fmt.Printf("Error: Failed to open chats: %v\n", err)
 		os.Exit(1)
 	}
 
-	defaultSess := defaultWS.OrchestratorSession()
-	if agentsData, err := os.ReadFile("AGENTS.md"); err == nil {
-		defaultSess.Agent.SetSensors(sensors.NewRegistryFromGuide(".", string(agentsData)))
-	}
-	defaultSess.MarkStarted("default")
-	manager := session.NewManager(defaultSess)
-
-	wsReg := orchestrator.NewWorkspaceRegistry()
-	wsReg.Register(defaultSess.ID, defaultWS)
-
-	app := cli.NewApp(manager, wsReg, roleStore, registry, cfg, eventStore)
-
-	if len(os.Args) > 1 {
-		if os.Args[1] == "init" {
-			targetDir := "."
-			if len(os.Args) > 2 {
-				targetDir = os.Args[2]
-			}
-			fmt.Printf("Scanning workspace (%s) and generating verification commands with %s...\n", targetDir, cfg.ActiveModel)
-			gen, err := guides.InitWorkspace(context.Background(), provider, cfg.ActiveModel, targetDir)
-			if err != nil {
-				fmt.Printf("Error: %v\n", err)
-				os.Exit(1)
-			}
-			fmt.Printf("\nAGENTS.md updated successfully:\n\n%s\n", gen)
-			return
-		}
-
-		userInstruction := strings.Join(os.Args[1:], " ")
-		if err := cli.RunGoal(app, defaultSess, userInstruction); err != nil {
+	if len(args) > 0 {
+		userInstruction := strings.Join(args, " ")
+		active, err := app.Sessions.GetActive()
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
 			os.Exit(1)
 		}
-		defaultWS.Close()
+		if err := cli.RunGoal(app, active, userInstruction); err != nil {
+			os.Exit(1)
+		}
+		app.Workspaces.Each(func(w *orchestrator.Workspace) { w.Close() })
 		return
 	}
 
 	cli.StartInteractive(app)
+}
+
+// workDirFromArgs uses the first argument when it is a directory.
+// Anything after that is a one-shot instruction. A non-directory first
+// argument stays part of the instruction.
+func workDirFromArgs(args []string) (string, []string) {
+	if len(args) == 0 {
+		return ".", args
+	}
+	info, err := os.Stat(args[0])
+	if err != nil || !info.IsDir() {
+		return ".", args
+	}
+	abs, err := filepath.Abs(args[0])
+	if err != nil {
+		return args[0], args[1:]
+	}
+	return abs, args[1:]
 }

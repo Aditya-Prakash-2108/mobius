@@ -23,6 +23,12 @@ func NewBashTool(workDir string) *BashTool {
 	return &BashTool{WorkingDir: workDir}
 }
 
+func (b *BashTool) SetWorkingDir(dir string) {
+	if b != nil {
+		b.WorkingDir = dir
+	}
+}
+
 // Name returns the tool identifier "run_command".
 func (b *BashTool) Name() string {
 	return "run_command"

@@ -6,14 +6,20 @@ import (
 	"os"
 	"strings"
 
-	"mobius/pkg/guides"
 	"mobius/pkg/orchestrator"
-	"mobius/pkg/sensors"
 
 	"github.com/charmbracelet/x/term"
 )
 
 func readPrompt(prompt string) (string, bool) {
+	return readLine(prompt, false)
+}
+
+func readSecret(prompt string) (string, bool) {
+	return readLine(prompt, true)
+}
+
+func readLine(prompt string, mask bool) (string, bool) {
 	fmt.Print(prompt)
 	fd := os.Stdin.Fd()
 	oldState, err := term.MakeRaw(fd)
@@ -83,7 +89,11 @@ func readPrompt(prompt string) (string, bool) {
 		if b >= 32 && b <= 126 {
 			r := rune(b)
 			input = append(input, r)
-			fmt.Print(string(r))
+			if mask {
+				fmt.Print("•")
+			} else {
+				fmt.Print(string(r))
+			}
 		}
 	}
 }
@@ -119,6 +129,10 @@ func StartREPL(app *App) {
 			}
 		case "/newchat":
 			handleNewChat(app)
+		case "/connect":
+			if err := promptConnection(app); err != nil {
+				fmt.Printf("Error: %v\n", err)
+			}
 		case "/models":
 			activeSession, err := sm.GetActive()
 			if err != nil {
@@ -150,27 +164,17 @@ func StartREPL(app *App) {
 				})
 			}
 			fmt.Printf("Switched model to '%s'\n", model)
-		case "/init":
-			activeSession, err := sm.GetActive()
+		case "/workdir":
+			dir, ok := readPrompt("Path to work on: ")
+			if !ok {
+				continue
+			}
+			abs, err := app.SetWorkDir(dir)
 			if err != nil {
 				fmt.Printf("Error: %v\n", err)
 				continue
 			}
-			provider, err := app.Config.GetProviderForModel(activeSession.Agent.GetModel())
-			if err != nil {
-				fmt.Printf("Error: %v\n", err)
-				continue
-			}
-			fmt.Printf("Scanning workspace and generating verification commands with %s...\n", activeSession.Agent.GetModel())
-			gen, err := guides.InitWorkspace(context.Background(), provider, activeSession.Agent.GetModel(), ".")
-			if err != nil {
-				fmt.Printf("Error: %v\n", err)
-				continue
-			}
-			if agentsData, err := os.ReadFile("AGENTS.md"); err == nil {
-				activeSession.Agent.SetSensors(sensors.NewRegistryFromGuide(".", string(agentsData)))
-			}
-			fmt.Printf("\nAGENTS.md updated successfully:\n\n%s\n", gen)
+			fmt.Printf("Working in %s\n", abs)
 		default:
 			// Normal AI Prompt
 			activeSession, err := sm.GetActive()
@@ -204,11 +208,68 @@ func handleNewChat(app *App) {
 		return
 	}
 	orch := ws.OrchestratorSession()
-	if agentsData, err := os.ReadFile("AGENTS.md"); err == nil {
-		orch.Agent.SetSensors(sensors.NewRegistryFromGuide(".", string(agentsData)))
-	}
+	app.attachSensors(orch.Agent)
 	newSess := sm.CreateSession("New Chat", orch.Agent)
 	newSess.MarkStarted("New Chat")
 	app.Workspaces.Register(newSess.ID, ws)
 	fmt.Printf("Started new session '%s' (ID: %s)\n", newSess.Name(), newSess.ID)
+}
+
+func promptConnection(app *App) error {
+	view := app.Config.ConnectionForm()
+	for _, api := range app.Config.SavedAPIs() {
+		mark := ""
+		if api.Current {
+			mark = " (current)"
+		}
+		label := api.Name
+		if label == "" {
+			label = api.BaseURL
+		}
+		fmt.Printf("saved: %s · %s%s\n", label, api.Model, mark)
+	}
+	fmt.Println("Add an API. The key is stored in the system keystore. Leave both prices blank to hide cost.")
+	name, ok := readPrompt("Name: ")
+	if !ok {
+		return nil
+	}
+	base, ok := readPrompt("API URL [" + view.BaseURL + "]: ")
+	if !ok {
+		return nil
+	}
+	if strings.TrimSpace(base) == "" {
+		base = view.BaseURL
+	}
+	keyPrompt := "API key: "
+	if view.HasKey {
+		keyPrompt = "API key (blank keeps the saved key): "
+	}
+	key, ok := readSecret(keyPrompt)
+	if !ok {
+		return nil
+	}
+	model, ok := readPrompt("Model [" + view.Model + "]: ")
+	if !ok {
+		return nil
+	}
+	if strings.TrimSpace(model) == "" {
+		model = view.Model
+	}
+	promptPrice, ok := readPrompt("Prompt price / 1M (blank hides cost): ")
+	if !ok {
+		return nil
+	}
+	completion, ok := readPrompt("Completion price / 1M (blank hides cost): ")
+	if !ok {
+		return nil
+	}
+	if err := app.ApplyConnection(name, base, key, model, promptPrice, completion); err != nil {
+		return err
+	}
+	if app.Config.PricesKnown(strings.TrimSpace(model)) {
+		fmt.Println("Saved.")
+		return nil
+	}
+	fmt.Println("Saved. Cost stays hidden until a price is entered.")
+	return nil
 }

@@ -16,6 +16,14 @@ func TestBudgetNeverTranscriptEvent(t *testing.T) {
 	if _, ok := evs[0].(BudgetEvent); !ok {
 		t.Fatalf("expected BudgetEvent, got %T", evs[0])
 	}
+	plain := "[Budget] Tokens: 10 In, 5 Out"
+	evs = dec.Decode(src, plain)
+	if len(evs) != 1 {
+		t.Fatalf("expected 1 budget event without cost, got %#v", evs)
+	}
+	if _, ok := evs[0].(BudgetEvent); !ok {
+		t.Fatalf("expected BudgetEvent, got %T", evs[0])
+	}
 }
 
 func TestThinkingStepIsHidden(t *testing.T) {

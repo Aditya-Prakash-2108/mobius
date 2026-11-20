@@ -160,6 +160,53 @@ func renderFooter(sz LayoutSizes, m *Model) string {
 	var b strings.Builder
 	b.WriteString(StyleBorder.Width(width).Render(strings.Repeat("─", width)))
 	b.WriteString("\n")
+	if m.workPathOn {
+		draft := m.workPathDraft
+		if draft == "" {
+			draft = "/path/to/project"
+		}
+		b.WriteString(StyleGreen.Width(width).Render("▸ " + draft))
+		b.WriteString("\n")
+		hint := "Enter works in this folder · Esc back"
+		if m.workPathErr != "" {
+			hint = m.workPathErr
+		}
+		b.WriteString(StyleMuted.Width(width).Render(hint))
+		return b.String()
+	}
+	if m.addingModel {
+		b.WriteString(renderAddModelForm(m, width, sz.MenuLines))
+		b.WriteString("\n")
+		hint := "Enter adds this model · Esc back · blank price hides cost"
+		if m.modelScopeLabel != "" {
+			hint = "Add to " + m.modelScopeLabel + " · Enter adds · blank price hides cost"
+		}
+		if m.addModelErr != "" {
+			hint = m.addModelErr
+		}
+		b.WriteString(StyleMuted.Width(width).Render(hint))
+		return b.String()
+	}
+	if m.connectOn {
+		if m.connectListing {
+			b.WriteString(renderConnectList(m, width, sz.MenuLines))
+			b.WriteString("\n")
+			hint := "Enter uses this API · Add API saves another · Esc closes"
+			if m.connectErr != "" {
+				hint = m.connectErr
+			}
+			b.WriteString(StyleMuted.Width(width).Render(hint))
+			return b.String()
+		}
+		b.WriteString(renderConnectForm(m, width, sz.MenuLines))
+		b.WriteString("\n")
+		hint := "Enter saves this API · Esc back · blank price hides cost"
+		if m.connectErr != "" {
+			hint = m.connectErr
+		}
+		b.WriteString(StyleMuted.Width(width).Render(hint))
+		return b.String()
+	}
 	if m.menu != MenuNone {
 		b.WriteString(renderMenuFooter(m, width, sz.MenuLines))
 		b.WriteString("\n")
@@ -206,7 +253,11 @@ func renderMenuFooter(m *Model, width, lines int) string {
 		}
 		var line string
 		if i == sel {
-			line = StyleGreen.Render("▸ "+label) + StyleMuted.Render("  (↑↓ select · Enter · Esc)")
+			hint := "  (↑↓ select · Enter · Esc)"
+			if m.menu == MenuChats {
+				hint = "  (↑↓ select · Enter · Del deletes · Esc)"
+			}
+			line = StyleGreen.Render("▸ "+label) + StyleMuted.Render(hint)
 		} else {
 			line = StyleMuted.Render("  " + label)
 		}

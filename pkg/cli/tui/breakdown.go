@@ -18,6 +18,7 @@ type ContextBreakdown struct {
 	Rules        int
 	Conversation int
 	CostUSD      float64
+	HasPrice     bool
 }
 
 // TokenCapacity is the sidebar bar denominator.

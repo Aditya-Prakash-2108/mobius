@@ -15,21 +15,45 @@ const (
 const (
 	ActionNewChat = iota
 	ActionModels
+	ActionConnect
 	ActionChats
 	ActionTeams
-	ActionReload
-	ActionInit
+	ActionWorkDir
 	ActionExit
 )
+
+const addModelID = "__add_model__"
 
 var actionLabels = []string{
 	"Start New Chat",
 	"Models",
+	"Connect API",
 	"Switch / List Chats",
 	"Show Teams",
-	"Reload Roles",
-	"Init Workspace",
+	"Work on path",
 	"Exit",
+}
+
+var connectLabels = []string{
+	"Name",
+	"API URL",
+	"API key",
+	"Model",
+	"Prompt price / 1M",
+	"Completion price / 1M",
+}
+
+var addModelLabels = []string{
+	"Model",
+	"Prompt price / 1M",
+	"Completion price / 1M",
+}
+
+func modelLabel(opt ModelOption) string {
+	if opt.URL == "" {
+		return opt.ID
+	}
+	return opt.ID + " · " + opt.URL
 }
 
 // MenuTrigger reports whether a compose draft may open a footer menu.

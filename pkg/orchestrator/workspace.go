@@ -54,6 +54,19 @@ func (r *WorkspaceRegistry) Remove(chatID string) {
 	delete(r.m, chatID)
 }
 
+// Each calls fn for every workspace. fn runs without the registry lock.
+func (r *WorkspaceRegistry) Each(fn func(*Workspace)) {
+	r.mu.Lock()
+	list := make([]*Workspace, 0, len(r.m))
+	for _, w := range r.m {
+		list = append(list, w)
+	}
+	r.mu.Unlock()
+	for _, w := range list {
+		fn(w)
+	}
+}
+
 // NewWorkspace builds an isolated orchestrator session and optional default team.
 func NewWorkspace(parent context.Context, chatID string, roleStore *roles.Store, baseTools *tools.Registry, model ModelSpec, factory AgentFactory) (*Workspace, error) {
 	if parent == nil {
@@ -84,10 +97,10 @@ func NewWorkspace(parent context.Context, chatID string, roleStore *roles.Store,
 		factory:      factory,
 	}
 
-	if _, ok := roleStore.Department("engineering"); ok {
-		if err := w.manager.CreateTeam("engineering"); err != nil {
+	for _, dept := range roleStore.Departments() {
+		if err := w.manager.CreateTeam(dept.ID); err != nil {
 			cancel()
-			return nil, err
+			return nil, fmt.Errorf("create team %s: %w", dept.ID, err)
 		}
 	}
 	return w, nil

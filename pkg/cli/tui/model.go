@@ -47,6 +47,29 @@ type Model struct {
 
 	sidebarBreakdown ContextBreakdown
 	subCancel        context.CancelFunc
+
+	connectOn      bool
+	connectListing bool
+	connectBack    bool
+	connectItems   []string
+	connectIDs     []string
+	connectPick    int
+	connectIndex   int
+	connectFields  [6]string
+	connectHadKey  bool
+	connectKeepKey bool
+	connectErr     string
+
+	modelScope      string
+	modelScopeLabel string
+	addingModel     bool
+	addModelIndex   int
+	addModelFields  [3]string
+	addModelErr     string
+
+	workPathOn    bool
+	workPathDraft string
+	workPathErr   string
 }
 
 func NewModel(backend Backend, settings Settings, width, height int) (*Model, error) {
@@ -72,10 +95,39 @@ func NewModel(backend Backend, settings Settings, width, height int) (*Model, er
 		modelName:    backend.CurrentModel(chat.ID),
 		composeLines: 1,
 	}
+	m.hydrateChats()
 	m.refreshTeams()
 	m.refreshSidebar()
 	m.subCancel = backend.Subscribe(chat.ID, m.enqueueEvent)
 	return m, nil
+}
+
+func (m *Model) hydrateChats() {
+	if m.backend == nil {
+		return
+	}
+	for _, chat := range m.backend.ListChats() {
+		buf := m.store.Buffer(chat.ID)
+		for _, turn := range m.backend.History(chat.ID) {
+			applyHistoryTurn(buf, chat.ID, turn, m.settings)
+		}
+	}
+}
+
+func (m *Model) remember(chatID, role, speaker, text string) {
+	if m.backend == nil || strings.TrimSpace(text) == "" {
+		return
+	}
+	m.backend.Remember(chatID, role, speaker, text)
+	if chatID != m.chatID {
+		return
+	}
+	for _, chat := range m.backend.ListChats() {
+		if chat.ID == chatID {
+			m.chatName = chat.Name
+			return
+		}
+	}
 }
 
 func (m *Model) enqueueEvent(ev LiveEvent) {
@@ -152,6 +204,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			src.Kind = SourceOrchestrator
 		}
 		if msg.done.Err != nil {
+			m.remember(msg.handle.ChatID, "error", src.Name, msg.done.Err.Error())
 			m.store.Buffer(msg.handle.ChatID).ApplyLiveEvent(RunErrorEvent{
 				SourceRef: src,
 				Text:      msg.done.Err.Error(),
@@ -161,6 +214,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				SourceRef: src, State: WorkerError,
 			}, m.settings)
 		} else {
+			m.remember(msg.handle.ChatID, "assistant", src.Name, msg.done.Reply)
 			m.store.Buffer(msg.handle.ChatID).ApplyLiveEvent(FinalReplyEvent{
 				SourceRef: src,
 				Text:      msg.done.Reply,
@@ -187,11 +241,13 @@ func (m *Model) showOrchestratorDecision(chatID, runID string, trace []string, r
 	buf := m.store.Buffer(chatID)
 	for _, tr := range trace {
 		buf.ApplyLiveEvent(RouteTraceEvent{SourceRef: src, Text: tr}, m.settings)
+		m.remember(chatID, "trace", "orchestrator", tr)
 	}
 	if strings.TrimSpace(reply) == "" {
 		return
 	}
 	buf.ApplyLiveEvent(FinalReplyEvent{SourceRef: src, Text: reply, RunID: runID}, m.settings)
+	m.remember(chatID, "assistant", "orchestrator", reply)
 }
 
 func waitDispatch(handle DispatchHandle) tea.Cmd {
@@ -228,6 +284,15 @@ func (m *Model) syncViewport(buf *ChatBuffer) {
 }
 
 func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.addingModel {
+		return m.handleAddModelKey(msg)
+	}
+	if m.workPathOn {
+		return m.handleWorkPathKey(msg)
+	}
+	if m.connectOn {
+		return m.handleConnectKey(msg)
+	}
 	if m.menu != MenuNone {
 		return m.handleMenuKey(msg)
 	}
@@ -317,6 +382,22 @@ func (m *Model) openMenu(menu FooterMenu) *Model {
 }
 
 func (m *Model) menuLineCount() int {
+	if m.addingModel {
+		return len(addModelLabels)
+	}
+	if m.workPathOn {
+		return 1
+	}
+	if m.connectOn {
+		if m.connectListing {
+			n := len(m.connectItems)
+			if n < 1 {
+				return 1
+			}
+			return n
+		}
+		return len(connectLabels)
+	}
 	if m.menu == MenuNone {
 		return 0
 	}
@@ -341,11 +422,14 @@ func (m *Model) loadMenuItems() {
 		if m.backend == nil {
 			return
 		}
-		opts, err := m.backend.ListModels()
-		if err != nil {
+		if m.modelScope == "" {
+			for _, group := range m.backend.ListProviders() {
+				m.menuItems = append(m.menuItems, group.Label)
+				m.menuIDs = append(m.menuIDs, group.ID)
+			}
 			return
 		}
-		for _, opt := range opts {
+		for _, opt := range m.backend.ProviderModels(m.modelScope) {
 			label := opt.ID
 			if opt.Current {
 				label += " · current"
@@ -353,6 +437,8 @@ func (m *Model) loadMenuItems() {
 			m.menuItems = append(m.menuItems, label)
 			m.menuIDs = append(m.menuIDs, opt.ID)
 		}
+		m.menuItems = append(m.menuItems, "Add model")
+		m.menuIDs = append(m.menuIDs, addModelID)
 	case MenuChats:
 		m.menuItems = nil
 		if m.backend == nil {
@@ -369,7 +455,20 @@ func (m *Model) loadMenuItems() {
 
 func (m *Model) handleMenuKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
+	case "delete", "del":
+		if m.menu == MenuChats {
+			m.deleteSelectedChat()
+			return m, nil
+		}
+		return m, nil
 	case "esc":
+		if m.menu == MenuModels && m.modelScope != "" {
+			m.modelScope = ""
+			m.modelScopeLabel = ""
+			m.menuIndex = 0
+			m.loadMenuItems()
+			return m, nil
+		}
 		if m.menu == MenuModels || m.menu == MenuChats {
 			m.menu = MenuActions
 			m.menuIndex = 0
@@ -441,8 +540,14 @@ func (m *Model) activateMenu() (tea.Model, tea.Cmd) {
 			}
 		case ActionModels:
 			m.menu = MenuModels
+			m.modelScope = ""
+			m.modelScopeLabel = ""
+			m.addingModel = false
 			m.menuIndex = 0
 			m.loadMenuItems()
+			return m, nil
+		case ActionConnect:
+			m.openConnect()
 			return m, nil
 		case ActionChats:
 			m.menu = MenuChats
@@ -454,19 +559,39 @@ func (m *Model) activateMenu() (tea.Model, tea.Cmd) {
 			text := m.backend.TeamsText(m.chatID)
 			buf := m.store.Buffer(m.chatID)
 			buf.ApplyLiveEvent(RouteTraceEvent{SourceRef: SourceRef{ChatID: m.chatID, Name: "orchestrator"}, Text: text}, m.settings)
-		case ActionReload:
+		case ActionWorkDir:
 			m.menu = MenuNone
-			_ = m.backend.ReloadRoles(m.ctx, m.chatID)
-		case ActionInit:
-			m.menu = MenuNone
-			_, _ = m.backend.InitWorkspace(m.ctx, m.chatID)
+			m.workPathOn = true
+			m.workPathDraft = ""
+			m.workPathErr = ""
+			return m, nil
 		}
 	case MenuModels:
-		if m.backend != nil && m.menuIndex >= 0 && m.menuIndex < len(m.menuIDs) {
-			if err := m.backend.SetModel(m.chatID, m.menuIDs[m.menuIndex]); err == nil {
-				m.modelName = m.backend.CurrentModel(m.chatID)
-			}
+		if m.backend == nil || m.menuIndex < 0 || m.menuIndex >= len(m.menuIDs) {
+			m.menu = MenuNone
+			break
 		}
+		id := m.menuIDs[m.menuIndex]
+		if m.modelScope == "" {
+			m.modelScope = id
+			if m.menuIndex < len(m.menuItems) {
+				m.modelScopeLabel = m.menuItems[m.menuIndex]
+			}
+			m.menuIndex = 0
+			m.loadMenuItems()
+			return m, nil
+		}
+		if id == addModelID {
+			m.addingModel = true
+			m.addModelIndex = 0
+			m.addModelFields = [3]string{}
+			m.addModelErr = ""
+			return m, nil
+		}
+		if err := m.backend.UseProviderModel(m.chatID, m.modelScope, id); err == nil {
+			m.modelName = m.backend.CurrentModel(m.chatID)
+		}
+		m.modelScope = ""
 		m.menu = MenuNone
 	case MenuChats:
 		if m.backend != nil && m.menuIndex >= 0 && m.menuIndex < len(m.menuIDs) {
@@ -519,6 +644,9 @@ func (m *Model) submit() (tea.Model, tea.Cmd) {
 	buf := m.store.Buffer(m.chatID)
 	runID := buf.BeginRun()
 	buf.AppendUser(text, runID)
+	if !strings.HasPrefix(text, "/") {
+		m.remember(m.chatID, "user", "user", text)
+	}
 	m.vp.PinBottom()
 	buf.AutoFollow = true
 	if strings.HasPrefix(text, "/") {
@@ -691,10 +819,166 @@ func (m *Model) refreshSidebar() {
 	buf := m.store.Buffer(m.chatID)
 	snap := m.backend.ContextFor(m.chatID, buf.ViewFilter)
 	snap.Breakdown.NoteConversation(EstimateTranscript(buf.VisibleBlocks()))
-	if tot := m.ledger.Total(); tot.CostUSD > snap.Breakdown.CostUSD {
-		snap.Breakdown.CostUSD = tot.CostUSD
+	if snap.Breakdown.HasPrice {
+		if tot := m.ledger.Total(); tot.CostUSD > snap.Breakdown.CostUSD {
+			snap.Breakdown.CostUSD = tot.CostUSD
+		}
+	} else {
+		snap.Breakdown.CostUSD = 0
 	}
 	m.sidebarBreakdown = snap.Breakdown
+}
+
+func (m *Model) deleteSelectedChat() {
+	if m.backend == nil || m.menuIndex < 0 || m.menuIndex >= len(m.menuIDs) {
+		return
+	}
+	id := m.menuIDs[m.menuIndex]
+	snap, err := m.backend.DeleteChat(m.ctx, id)
+	if err != nil {
+		return
+	}
+	if id == m.chatID {
+		m.switchChat(snap)
+	}
+	m.loadMenuItems()
+	if m.menuIndex >= len(m.menuItems) {
+		m.menuIndex = len(m.menuItems) - 1
+	}
+	if m.menuIndex < 0 {
+		m.menuIndex = 0
+	}
+}
+
+func (m *Model) handleWorkPathKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c":
+		m.Shutdown()
+		return m, tea.Quit
+	case "esc":
+		m.workPathOn = false
+		m.workPathDraft = ""
+		m.workPathErr = ""
+		return m, nil
+	case "enter":
+		path := strings.TrimSpace(m.workPathDraft)
+		if path == "" || m.backend == nil {
+			m.workPathErr = "path is required"
+			return m, nil
+		}
+		abs, err := m.backend.SetWorkDir(path)
+		if err != nil {
+			m.workPathErr = err.Error()
+			return m, nil
+		}
+		m.workPathOn = false
+		m.workPathDraft = ""
+		m.workPathErr = ""
+		src := SourceRef{ChatID: m.chatID, Name: "orchestrator", Kind: SourceOrchestrator}
+		m.store.Buffer(m.chatID).ApplyLiveEvent(RouteTraceEvent{
+			SourceRef: src, Text: "Working in " + abs,
+		}, m.settings)
+		return m, nil
+	case "backspace":
+		if m.workPathDraft != "" {
+			_, size := utf8.DecodeLastRuneInString(m.workPathDraft)
+			m.workPathDraft = m.workPathDraft[:len(m.workPathDraft)-size]
+		}
+		m.workPathErr = ""
+		return m, nil
+	case "ctrl+u":
+		m.workPathDraft = ""
+		m.workPathErr = ""
+		return m, nil
+	case " ", "space":
+		m.workPathDraft += " "
+		m.workPathErr = ""
+		return m, nil
+	default:
+		if msg.Type == tea.KeyRunes {
+			m.workPathDraft += string(msg.Runes)
+			m.workPathErr = ""
+		}
+	}
+	return m, nil
+}
+
+func (m *Model) handleAddModelKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c":
+		m.Shutdown()
+		return m, tea.Quit
+	case "esc":
+		m.addingModel = false
+		m.addModelFields = [3]string{}
+		m.addModelErr = ""
+		m.menu = MenuModels
+		m.loadMenuItems()
+		return m, nil
+	case "tab", "down":
+		m.addModelIndex = (m.addModelIndex + 1) % len(addModelLabels)
+		m.addModelErr = ""
+		return m, nil
+	case "shift+tab", "up":
+		m.addModelIndex--
+		if m.addModelIndex < 0 {
+			m.addModelIndex = len(addModelLabels) - 1
+		}
+		m.addModelErr = ""
+		return m, nil
+	case "enter":
+		name := strings.TrimSpace(m.addModelFields[0])
+		if name == "" || m.backend == nil {
+			m.addModelErr = "model name is required"
+			return m, nil
+		}
+		if err := m.backend.AddProviderModel(m.chatID, m.modelScope, name, m.addModelFields[1], m.addModelFields[2]); err != nil {
+			m.addModelErr = err.Error()
+			return m, nil
+		}
+		m.addingModel = false
+		m.addModelFields = [3]string{}
+		m.addModelErr = ""
+		m.modelName = m.backend.CurrentModel(m.chatID)
+		m.menu = MenuModels
+		m.menuIndex = 0
+		m.loadMenuItems()
+		for i, id := range m.menuIDs {
+			if id == name {
+				m.menuIndex = i
+				break
+			}
+		}
+		return m, nil
+	case "backspace":
+		m.editAddModel(func(s string) string {
+			if s == "" {
+				return s
+			}
+			_, size := utf8.DecodeLastRuneInString(s)
+			return s[:len(s)-size]
+		})
+		return m, nil
+	case "ctrl+u":
+		m.editAddModel(func(string) string { return "" })
+		return m, nil
+	case " ", "space":
+		m.editAddModel(func(s string) string { return s + " " })
+		return m, nil
+	default:
+		if msg.Type == tea.KeyRunes {
+			m.editAddModel(func(s string) string { return s + string(msg.Runes) })
+		}
+	}
+	return m, nil
+}
+
+func (m *Model) editAddModel(fn func(string) string) {
+	if m.addModelIndex < 0 || m.addModelIndex >= len(m.addModelFields) {
+		return
+	}
+	m.addModelFields[m.addModelIndex] = fn(m.addModelFields[m.addModelIndex])
+	m.addModelErr = ""
 }
 
 // Shutdown stops listeners; do not close the event channel while hooks may still fire.

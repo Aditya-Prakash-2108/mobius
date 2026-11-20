@@ -3,19 +3,20 @@ package cli
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 
+	"os"
+	"path/filepath"
+
 	"mobius/pkg/agent"
 	"mobius/pkg/cli/tui"
-	"mobius/pkg/guides"
 	"mobius/pkg/llm"
 	"mobius/pkg/orchestrator"
 	"mobius/pkg/roles"
-	"mobius/pkg/sensors"
 	"mobius/pkg/session"
 	"mobius/pkg/tools"
-	"os"
 )
 
 // TUIBackend implements tui.Backend using App wiring.
@@ -67,9 +68,93 @@ func (b *TUIBackend) ListModels() ([]tui.ModelOption, error) {
 		if info != nil && info.Model != "" {
 			id = info.Model
 		}
-		out = append(out, tui.ModelOption{ID: id, Current: id == cur})
+		out = append(out, tui.ModelOption{ID: id, URL: infoURL(info), Current: id == cur})
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out, nil
+}
+
+func infoURL(info *llm.ModelInfo) string {
+	if info == nil {
+		return ""
+	}
+	return info.BaseURL
+}
+
+func (b *TUIBackend) ListProviders() []tui.ProviderGroup {
+	groups := b.app.Config.ProviderGroups()
+	out := make([]tui.ProviderGroup, 0, len(groups))
+	for _, group := range groups {
+		out = append(out, tui.ProviderGroup{ID: group.ID, Label: group.Label})
+	}
+	return out
+}
+
+func (b *TUIBackend) ProviderModels(providerID string) []tui.ModelOption {
+	var models []string
+	var base string
+	for _, group := range b.app.Config.ProviderGroups() {
+		if group.ID == providerID {
+			models = append([]string(nil), group.Models...)
+			base = group.BaseURL
+			break
+		}
+	}
+	activeBase, activeModel := b.app.Config.ActiveEndpoint()
+	out := make([]tui.ModelOption, 0, len(models))
+	for _, model := range models {
+		current := model == activeModel && (activeBase == base || (activeBase == "" && !strings.HasPrefix(providerID, "url:")))
+		out = append(out, tui.ModelOption{ID: model, URL: base, Current: current})
+	}
+	return out
+}
+
+func (b *TUIBackend) UseProviderModel(chatID, providerID, model string) error {
+	if err := b.app.UseProviderModel(providerID, model); err != nil {
+		return err
+	}
+	return b.applyChatModel(chatID, model)
+}
+
+func (b *TUIBackend) AddProviderModel(chatID, providerID, model, promptPrice, completionPrice string) error {
+	if err := b.app.AddProviderModel(providerID, model, promptPrice, completionPrice); err != nil {
+		return err
+	}
+	return b.applyChatModel(chatID, model)
+}
+
+func (b *TUIBackend) DeleteChat(ctx context.Context, chatID string) (tui.ChatSnapshot, error) {
+	if ws, ok := b.app.Workspaces.Get(chatID); ok {
+		ws.Close()
+		b.app.Workspaces.Remove(chatID)
+	}
+	next, err := b.app.Sessions.Remove(chatID)
+	if err != nil {
+		return tui.ChatSnapshot{}, err
+	}
+	eventsDir := filepath.Join(filepath.Dir(b.app.ChatDir), "events")
+	if err := session.DeleteChat(b.app.ChatDir, eventsDir, chatID); err != nil {
+		return tui.ChatSnapshot{}, err
+	}
+	if next == nil {
+		return b.NewChat(ctx)
+	}
+	_ = session.SetActiveChat(b.app.ChatDir, next.ID)
+	return tui.ChatSnapshot{ID: next.ID, Name: next.Name()}, nil
+}
+
+func (b *TUIBackend) applyChatModel(chatID, model string) error {
+	sess, err := b.session(chatID)
+	if err != nil {
+		return nil
+	}
+	provider, err := b.app.Config.GetProviderForModel(model)
+	if err != nil {
+		return err
+	}
+	pCost, cCost := b.app.Config.GetPrices(model)
+	sess.Agent.SetModel(model, provider, pCost, cCost)
+	return nil
 }
 
 func (b *TUIBackend) Catalog(chatID string) []tui.TeamSnapshot {
@@ -97,27 +182,8 @@ func (b *TUIBackend) ReloadRoles(ctx context.Context, chatID string) error {
 	return ws.Manager().ReloadRoles(ctx)
 }
 
-func (b *TUIBackend) InitWorkspace(ctx context.Context, chatID string) (string, error) {
-	sess, err := b.session(chatID)
-	if err != nil {
-		return "", err
-	}
-	provider, err := b.app.Config.GetProviderForModel(sess.Agent.GetModel())
-	if err != nil {
-		return "", err
-	}
-	gen, err := guides.InitWorkspace(ctx, provider, sess.Agent.GetModel(), ".")
-	if err != nil {
-		return "", err
-	}
-	if agentsData, err := readAgentsMD(); err == nil {
-		sess.Agent.SetSensors(sensors.NewRegistryFromGuide(".", string(agentsData)))
-	}
-	return gen, nil
-}
-
-func readAgentsMD() ([]byte, error) {
-	return readFileFirst("AGENTS.md")
+func (b *TUIBackend) SetWorkDir(dir string) (string, error) {
+	return b.app.SetWorkDir(dir)
 }
 
 func (b *TUIBackend) TeamsText(chatID string) string {
@@ -143,18 +209,36 @@ func (b *TUIBackend) NewChat(ctx context.Context) (tui.ChatSnapshot, error) {
 		return tui.ChatSnapshot{}, err
 	}
 	orch := ws.OrchestratorSession()
-	if data, err := readAgentsMD(); err == nil {
-		orch.Agent.SetSensors(sensors.NewRegistryFromGuide(".", string(data)))
-	}
+	b.app.attachSensors(orch.Agent)
 	newSess := b.app.Sessions.CreateSession("New Chat", orch.Agent)
 	newSess.MarkStarted("New Chat")
 	b.app.Workspaces.Register(newSess.ID, ws)
+	_ = session.EnsureChat(b.app.ChatDir, newSess.ID, newSess.Name())
 	return tui.ChatSnapshot{ID: newSess.ID, Name: newSess.Name()}, nil
 }
 
 func (b *TUIBackend) SwitchChat(chatID string) error {
 	_, err := b.app.Sessions.SwitchSession(chatID)
+	if err == nil {
+		_ = session.SetActiveChat(b.app.ChatDir, chatID)
+	}
 	return err
+}
+
+func (b *TUIBackend) History(chatID string) []tui.HistoryTurn {
+	turns, err := session.History(b.app.ChatDir, chatID)
+	if err != nil {
+		return nil
+	}
+	out := make([]tui.HistoryTurn, 0, len(turns))
+	for _, turn := range turns {
+		out = append(out, tui.HistoryTurn{Role: turn.Role, Speaker: turn.Speaker, Text: turn.Text})
+	}
+	return out
+}
+
+func (b *TUIBackend) Remember(chatID, role, speaker, text string) {
+	b.app.RememberTurn(chatID, role, speaker, text)
 }
 
 func (b *TUIBackend) SetModel(chatID, model string) error {
@@ -232,7 +316,70 @@ func (b *TUIBackend) ContextFor(chatID, viewRoleID string) tui.ContextSnapshot {
 		}
 	}
 	bd := tui.ComputeBreakdown(msgs, toolDefs, cost)
+	model := ""
+	if orch != nil && orch.Agent != nil {
+		model = orch.Agent.GetModel()
+	}
+	bd.HasPrice = b.app.Config.PricesKnown(model)
+	if !bd.HasPrice {
+		bd.CostUSD = 0
+	}
 	return tui.ContextSnapshot{Breakdown: bd}
+}
+
+func (b *TUIBackend) ListAPIs() []tui.SavedAPI {
+	apis := b.app.Config.SavedAPIs()
+	seen := map[string]bool{}
+	var out []tui.SavedAPI
+	for _, api := range apis {
+		if api.BaseURL == "" || seen[api.BaseURL] {
+			continue
+		}
+		seen[api.BaseURL] = true
+		id := api.ID
+		current := false
+		for _, other := range apis {
+			if other.BaseURL == api.BaseURL && other.Current {
+				id = other.ID
+				current = true
+				break
+			}
+		}
+		label := api.Name
+		if label == "" {
+			label = api.BaseURL
+		} else if api.BaseURL != "" {
+			label += " · " + api.BaseURL
+		}
+		out = append(out, tui.SavedAPI{ID: id, Label: label, Current: current})
+	}
+	return out
+}
+
+func (b *TUIBackend) UseAPI(id string) error {
+	if err := b.app.UseSavedAPI(id); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (b *TUIBackend) Connection() tui.ConnectionView {
+	form := b.app.Config.ConnectionForm()
+	return tui.ConnectionView{
+		BaseURL:         form.BaseURL,
+		Model:           form.Model,
+		HasKey:          form.HasKey,
+		HasPrice:        form.HasPrice,
+		PromptPrice:     form.PromptPrice,
+		CompletionPrice: form.CompletionPrice,
+	}
+}
+
+func (b *TUIBackend) SaveConnection(chatID string, in tui.ConnectionInput) error {
+	if err := b.app.ApplyConnection(in.Name, in.BaseURL, in.APIKey, in.Model, in.PromptPrice, in.CompletionPrice); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (b *TUIBackend) Dispatch(ctx context.Context, chatID, input, runID string) (tui.DispatchHandle, error) {

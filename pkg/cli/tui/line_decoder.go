@@ -6,7 +6,7 @@ import (
 )
 
 var (
-	budgetRE = regexp.MustCompile(`^\[Budget\] Tokens: (\d+) In, (\d+) Out \| Cost: \$([0-9.]+) \(₹([0-9.]+)\)`)
+	budgetRE = regexp.MustCompile(`^\[Budget\] Tokens: (\d+) In, (\d+) Out(?: \| Cost: \$([0-9.]+) \(₹([0-9.]+)\))?`)
 	stepRE   = regexp.MustCompile(`^\[Step [^\]]+\]`)
 )
 
@@ -28,7 +28,10 @@ func (d *LineDecoder) Decode(src SourceRef, text string) []LiveEvent {
 	}
 	if m := budgetRE.FindStringSubmatch(firstLine(text)); len(m) == 5 {
 		in, out := atoi(m[1]), atoi(m[2])
-		usd, inr := atof(m[3]), atof(m[4])
+		usd, inr := 0.0, 0.0
+		if m[3] != "" {
+			usd, inr = atof(m[3]), atof(m[4])
+		}
 		return []LiveEvent{BudgetEvent{
 			SourceRef: src,
 			InTokens:  in,

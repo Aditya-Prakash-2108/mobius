@@ -15,13 +15,17 @@ func renderSidebar(w, height int, bd ContextBreakdown, ledger BudgetSnapshot, te
 	var b strings.Builder
 	b.WriteString(StyleMuted.Render("Context"))
 	b.WriteString("\n\n")
-	cost := bd.CostUSD
-	if ledger.CostUSD > cost {
-		cost = ledger.CostUSD
+	barWidth := inner
+	if bd.HasPrice {
+		cost := bd.CostUSD
+		if ledger.CostUSD > cost {
+			cost = ledger.CostUSD
+		}
+		b.WriteString(StyleGreen.Render(fmt.Sprintf("$%.5f", cost)))
+		b.WriteString("  ")
+		barWidth = inner - 12
 	}
-	b.WriteString(StyleGreen.Render(fmt.Sprintf("$%.5f", cost)))
-	b.WriteString("  ")
-	b.WriteString(renderUsageBar(bd, inner-12))
+	b.WriteString(renderUsageBar(bd, barWidth))
 	b.WriteString("\n")
 	pct := UsagePercent(bd)
 	b.WriteString(StyleMuted.Render(fmt.Sprintf("%d%%  ~%d / 128.0K", pct, bd.Used)))

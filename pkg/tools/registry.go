@@ -85,6 +85,21 @@ func NewRegistrySubset(base *Registry, names []string) *Registry {
 	return out
 }
 
+// SetWorkDir points every tool that has a working directory at dir.
+// Subsets keep the same tool values, so they follow this change.
+func (r *Registry) SetWorkDir(dir string) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, tool := range r.tools {
+		if setter, ok := tool.(interface{ SetWorkingDir(string) }); ok {
+			setter.SetWorkingDir(dir)
+		}
+	}
+}
+
 // NewDefaultRegistry creates a registry pre-loaded with all standard tools.
 func NewDefaultRegistry(workDir string) *Registry {
 	r := NewRegistry()

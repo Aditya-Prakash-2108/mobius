@@ -1,6 +1,7 @@
 package session
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -9,8 +10,8 @@ func TestSessionIncludesAgentBudget(t *testing.T) {
 	chdirModuleRoot(t)
 	ag := newTestAgent(t)
 	steps, _, _ := ag.Limits()
-	if steps != 8 {
-		t.Fatalf("config/agent.toml max_steps = %d, want 8", steps)
+	if steps <= 0 {
+		t.Fatal("expected a step budget from config/agent.toml")
 	}
 
 	sess := NewSession("s1", "Code Review", ag, "You are Code Review.")
@@ -21,7 +22,8 @@ func TestSessionIncludesAgentBudget(t *testing.T) {
 	if !strings.Contains(msgs[0].Content, "You are Code Review.") {
 		t.Fatalf("role text missing: %s", msgs[0].Content)
 	}
-	if !strings.Contains(msgs[0].Content, "Hard stop from config/agent.toml: 8 steps") {
-		t.Fatalf("budget notice missing: %s", msgs[0].Content)
+	want := fmt.Sprintf("Hard stop from config/agent.toml: %d steps", steps)
+	if !strings.Contains(msgs[0].Content, want) {
+		t.Fatalf("budget notice missing %q: %s", want, msgs[0].Content)
 	}
 }

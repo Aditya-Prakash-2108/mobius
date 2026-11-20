@@ -1,10 +1,24 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 
 	"mobius/pkg/llm"
 )
+
+func TestSidebarHidesUnsetPrice(t *testing.T) {
+	bd := ContextBreakdown{Capacity: TokenCapacity(), Used: 10, System: 10, CostUSD: 1.25}
+	out := StripANSI(renderSidebar(30, 20, bd, BudgetSnapshot{CostUSD: 2}, nil))
+	if strings.Contains(out, "$") {
+		t.Fatalf("price shown without a configured price:\n%s", out)
+	}
+	bd.HasPrice = true
+	out = StripANSI(renderSidebar(30, 20, bd, BudgetSnapshot{}, nil))
+	if !strings.Contains(out, "$1.25000") {
+		t.Fatalf("price hidden after it was set:\n%s", out)
+	}
+}
 
 func TestUsageBarWidths(t *testing.T) {
 	width := 20

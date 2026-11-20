@@ -606,7 +606,7 @@ func TestCatalogSnapshotRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), "engineering") {
+	if !strings.Contains(string(data), "engineering") || !strings.Contains(string(data), "product_manager") {
 		t.Fatalf("catalog: %s", data)
 	}
 }

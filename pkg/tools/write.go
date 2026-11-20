@@ -25,6 +25,12 @@ func NewWriteTool(workingDir string) *WriteTool {
 	return &WriteTool{WorkingDir: workingDir}
 }
 
+func (w *WriteTool) SetWorkingDir(dir string) {
+	if w != nil {
+		w.WorkingDir = dir
+	}
+}
+
 // Name returns the tool identifier "write_file".
 func (w *WriteTool) Name() string {
 	return "write_file"

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/pelletier/go-toml/v2"
 )
@@ -20,24 +21,63 @@ type ProviderConfig struct {
 
 // Config represents the top-level configuration loaded from config.toml.
 type Config struct {
+	mu          sync.RWMutex
 	ActiveModel string                    `toml:"default_model"`
 	Providers   map[string]ProviderConfig `toml:"providers"`
 	Pricing     struct {
 		Prompt     map[string]float64 `toml:"prompt"`
 		Completion map[string]float64 `toml:"completion"`
 	} `toml:"pricing"`
+
+	manual *Connection
+	saved  []Connection
 }
 
 type ModelInfo struct {
 	ProviderName string
 	Model        string
+	BaseURL      string
 }
 
 func (c *Config) GetPrices(modelName string) (float64, float64) {
-	promptCost := c.Pricing.Prompt[modelName]
-	compCost := c.Pricing.Completion[modelName]
+	if c == nil {
+		return 0, 0
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if modelName == "" {
+		modelName = c.ActiveModel
+	}
+	if c.manual != nil && c.manual.Model == modelName {
+		if !c.manual.HasPrice {
+			return 0, 0
+		}
+		return c.manual.PromptPrice, c.manual.CompletionPrice
+	}
+	return c.Pricing.Prompt[modelName], c.Pricing.Completion[modelName]
+}
 
-	return promptCost, compCost
+// PricesKnown reports whether a price was entered or configured for the model.
+// A missing price is not the same as a cost of zero.
+func (c *Config) PricesKnown(modelName string) bool {
+	if c == nil {
+		return false
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.pricesKnown(modelName)
+}
+
+func (c *Config) pricesKnown(modelName string) bool {
+	if modelName == "" {
+		modelName = c.ActiveModel
+	}
+	if c.manual != nil && c.manual.Model == modelName {
+		return c.manual.HasPrice
+	}
+	_, prompt := c.Pricing.Prompt[modelName]
+	_, completion := c.Pricing.Completion[modelName]
+	return prompt || completion
 }
 
 // LoadConfig reads and unmarshals a TOML configuration file from the specified path.
@@ -72,6 +112,8 @@ func (c *Config) ListAllModels() (map[string]*ModelInfo, error) {
 	if c == nil {
 		return nil, fmt.Errorf("config is nil")
 	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	allModels := make(map[string]*ModelInfo)
 	for _, provider := range c.Providers {
 		models := provider.Models
@@ -79,8 +121,19 @@ func (c *Config) ListAllModels() (map[string]*ModelInfo, error) {
 			allModels[model] = &ModelInfo{
 				ProviderName: provider.Name,
 				Model:        model,
+				BaseURL:      provider.BaseURL,
 			}
 		}
+	}
+	for _, conn := range c.saved {
+		if conn.Model == "" {
+			continue
+		}
+		name := "Custom"
+		if conn.Protocol != "" {
+			name = conn.Protocol
+		}
+		allModels[conn.Model] = &ModelInfo{ProviderName: name, Model: conn.Model, BaseURL: conn.BaseURL}
 	}
 
 	if len(allModels) == 0 {
@@ -92,22 +145,49 @@ func (c *Config) ListAllModels() (map[string]*ModelInfo, error) {
 
 // GetProviderForModel resolves the model name to its provider configuration and instantiates the Provider via factory.
 func (c *Config) GetProviderForModel(modelName string) (Provider, error) {
+	if c == nil {
+		return nil, fmt.Errorf("config is nil")
+	}
+	c.mu.RLock()
 	if modelName == "" {
 		modelName = c.ActiveModel
 	}
-
-	for _, prov := range c.Providers {
-		for _, m := range prov.Models {
+	if conn, ok := c.matchSaved(modelName); ok {
+		key, base, protocol := conn.APIKey, conn.BaseURL, conn.Protocol
+		c.mu.RUnlock()
+		if strings.TrimSpace(key) == "" {
+			return nil, fmt.Errorf("api key for %s is not in the system keystore", conn.Model)
+		}
+		if protocol == "" {
+			protocol = "openai"
+		}
+		factory, ok := providerFactories[protocol]
+		if !ok {
+			return nil, fmt.Errorf("unsupported API protocol %q for %s", protocol, base)
+		}
+		return factory(key, base), nil
+	}
+	var (
+		found  bool
+		prov   ProviderConfig
+		apiKey string
+	)
+	for _, candidate := range c.Providers {
+		for _, m := range candidate.Models {
 			if modelName == m {
-				factory, ok := providerFactories[prov.Type]
-				if !ok {
-					return nil, fmt.Errorf("unsupported provider type: %s", prov.Type)
-				}
-				apiKey := os.Getenv(prov.EnvKey)
-				return factory(apiKey, prov.BaseURL), nil
+				found = true
+				prov = candidate
+				apiKey = os.Getenv(candidate.EnvKey)
 			}
 		}
 	}
-
-	return nil, fmt.Errorf("no provider configured for model %q", modelName)
+	c.mu.RUnlock()
+	if !found {
+		return nil, fmt.Errorf("no provider configured for model %q", modelName)
+	}
+	factory, ok := providerFactories[prov.Type]
+	if !ok {
+		return nil, fmt.Errorf("unsupported provider type: %s", prov.Type)
+	}
+	return factory(apiKey, prov.BaseURL), nil
 }

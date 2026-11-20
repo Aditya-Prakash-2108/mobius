@@ -19,8 +19,9 @@ func ShowActionMenu() string {
 				Options(
 					huh.NewOption("Start New Chat", "/newchat"),
 					huh.NewOption("Models", "/models"),
+					huh.NewOption("Connect API", "/connect"),
 					huh.NewOption("Switch / List Chats", "/listchats"),
-					huh.NewOption("Init Workspace (Detect Build/Test)", "/init"),
+					huh.NewOption("Work on path", "/workdir"),
 					huh.NewOption("Exit Mobius", "/exit"),
 				).
 				Value(&selected),
@@ -93,7 +94,11 @@ func ShowModelMenu(cfg *llm.Config, currentModel string) (string, error) {
 			prefix = "\033[32m*\033[0m "
 			suffix = " \033[32m(---active---)\033[0m"
 		}
-		label := fmt.Sprintf("%s%-30s (%s)%s", prefix, info.Model, info.ProviderName, suffix)
+		where := info.BaseURL
+		if where == "" {
+			where = info.ProviderName
+		}
+		label := fmt.Sprintf("%s%s · %s%s", prefix, info.Model, where, suffix)
 		options = append(options, huh.NewOption(label, info.Model))
 	}
 

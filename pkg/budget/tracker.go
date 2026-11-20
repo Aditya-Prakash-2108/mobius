@@ -84,6 +84,9 @@ func (t *Tracker) Check() error {
 func (t *Tracker) Status() string {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
+	if t.pricePerMillionPrompt == 0 && t.pricePerMillionCompletion == 0 {
+		return fmt.Sprintf("[Budget] Tokens: %d In, %d Out", t.totalPromptTokens, t.totalCompletionTokens)
+	}
 	return fmt.Sprintf("[Budget] Tokens: %d In, %d Out | Cost: $%.5f (₹%.4f)",
 		t.totalPromptTokens, t.totalCompletionTokens, t.currentCostUSDLocked(), t.currentCostINRLocked())
 }

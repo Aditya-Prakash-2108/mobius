@@ -22,4 +22,4 @@ Prompts are split on purpose (harness playbook + Anthropic/OpenAI agent guidance
 
 1. Start simple; add rules only for **observed** failures (ratchet principle in `docs/HARNESS_PLAYBOOK.md`).
 2. After a bad run, check `.mobius/events/<thread>.jsonl` and add one line to `repl_guide.md` or a sensor — not a paragraph in the system prompt.
-3. Run `/init` or maintain `## Verification Commands` in `AGENTS.md` so sensors stay accurate.
+3. Keep `## Verification Commands` in the project's `AGENTS.md` so sensors stay accurate. Point Mobius at that project with a path.

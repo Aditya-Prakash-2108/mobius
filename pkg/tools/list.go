@@ -24,6 +24,12 @@ func NewListTool(workingDir string) *ListDirTool {
 	return &ListDirTool{workingDir: workingDir}
 }
 
+func (l *ListDirTool) SetWorkingDir(dir string) {
+	if l != nil {
+		l.workingDir = dir
+	}
+}
+
 // Name returns the tool identifier "list_dir".
 func (l *ListDirTool) Name() string {
 	return "list_dir"

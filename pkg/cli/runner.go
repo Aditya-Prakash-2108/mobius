@@ -12,6 +12,7 @@ func RunGoal(app *App, s *session.Session, userInstruction string) error {
 		s.MarkStarted(s.Name())
 	}
 	ctx := context.Background()
+	app.RememberTurn(s.ID, "user", "user", userInstruction)
 	res, err := app.DispatchUserInput(ctx, s, userInstruction, true)
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
@@ -19,6 +20,7 @@ func RunGoal(app *App, s *session.Session, userInstruction string) error {
 	}
 	if res.Reply != "" {
 		fmt.Printf("%s\n", res.Reply)
+		app.RememberTurn(s.ID, "assistant", "orchestrator", res.Reply)
 	}
 	return nil
 }
@@ -29,6 +31,7 @@ func RunGoalAsync(app *App, s *session.Session, userInstruction string) error {
 		s.MarkStarted(s.Name())
 	}
 	ctx := context.Background()
+	app.RememberTurn(s.ID, "user", "user", userInstruction)
 	res, err := app.DispatchUserInput(ctx, s, userInstruction, false)
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
@@ -36,6 +39,7 @@ func RunGoalAsync(app *App, s *session.Session, userInstruction string) error {
 	}
 	if res.Reply != "" {
 		fmt.Printf("%s\n", res.Reply)
+		app.RememberTurn(s.ID, "assistant", "orchestrator", res.Reply)
 	}
 	return nil
 }

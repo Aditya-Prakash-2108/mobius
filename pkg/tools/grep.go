@@ -28,6 +28,12 @@ func NewGrepTool(workingDir string) *GrepTool {
 	return &GrepTool{workingDir: workingDir}
 }
 
+func (g *GrepTool) SetWorkingDir(dir string) {
+	if g != nil {
+		g.workingDir = dir
+	}
+}
+
 // Name returns the tool identifier "grep_search".
 func (g *GrepTool) Name() string {
 	return "grep_search"

@@ -109,6 +109,28 @@ func TestRegistrySubsetConcurrent(t *testing.T) {
 	}
 }
 
+func TestSetWorkDirUpdatesSharedTools(t *testing.T) {
+	dir := t.TempDir()
+	next := t.TempDir()
+	base := NewDefaultRegistry(dir)
+	subset := NewRegistrySubset(base, []string{"view_file", "run_command"})
+	base.SetWorkDir(next)
+	view, err := subset.Get("view_file")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.(*ViewFileTool).WorkingDir != next {
+		t.Fatalf("view dir %q", view.(*ViewFileTool).WorkingDir)
+	}
+	bash, err := base.Get("run_command")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bash.(*BashTool).WorkingDir != next {
+		t.Fatalf("bash dir %q", bash.(*BashTool).WorkingDir)
+	}
+}
+
 func toolNames(list []Tool) []string {
 	names := make([]string, len(list))
 	for i := range list {

@@ -335,6 +335,14 @@ func (m *Manager) ReloadRoles(ctx context.Context) error {
 		team.Name = dept.Name
 		m.mu.Unlock()
 	}
+	for _, dept := range m.store.Departments() {
+		if _, ok := oldTeams[dept.ID]; ok {
+			continue
+		}
+		if err := m.CreateTeam(dept.ID); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

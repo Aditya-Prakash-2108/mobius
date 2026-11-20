@@ -26,6 +26,12 @@ func NewEditFileTool(workingDir string) *EditTool {
 	return &EditTool{workingDir: workingDir}
 }
 
+func (e *EditTool) SetWorkingDir(dir string) {
+	if e != nil {
+		e.workingDir = dir
+	}
+}
+
 // Name returns the tool identifier "edit_file".
 func (e *EditTool) Name() string {
 	return "edit_file"

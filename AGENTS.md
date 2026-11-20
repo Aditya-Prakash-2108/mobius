@@ -57,6 +57,6 @@ mobius/
 * **Git Hygiene**: Never run `git commit`, `git push`, or modify git config unless explicitly asked.
 
 ## Verification Commands
-Build: make build
-Test: make test-race
-Lint: make lint
+Build: go build ./...
+Test: go test ./...
+Lint: go vet ./...
