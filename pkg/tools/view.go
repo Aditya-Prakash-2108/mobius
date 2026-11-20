@@ -100,10 +100,10 @@ func (v *ViewFileTool) Execute(ctx context.Context, jsonArgs string) (string, er
 	for scanner.Scan() {
 		if currentLine >= startLine && (endLine <= 0 || currentLine <= endLine) {
 			line := scanner.Text()
-			builder.WriteString(fmt.Sprintf("%d: %s\n", currentLine, line))
+			fmt.Fprintf(&builder, "%d: %s\n", currentLine, line)
 			linesWritten++
 			if linesWritten >= maxLimit {
-				builder.WriteString(fmt.Sprintf("\n... [Output capped at %d lines]\n", maxLimit))
+				fmt.Fprintf(&builder, "\n... [Output capped at %d lines]\n", maxLimit)
 				break
 			}
 		}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"mobius/pkg/llm"
 	"strings"
+	"sync"
 )
 
 // CompactorConfig holds settings for automatic context compaction.
@@ -25,6 +26,7 @@ func DefaultCompactorConfig() CompactorConfig {
 
 // Compactor manages token metering, checkpoint summarization, and safe history pruning.
 type Compactor struct {
+	mu       sync.RWMutex
 	config   CompactorConfig
 	provider llm.Provider
 	model    string
@@ -51,18 +53,27 @@ func NewCompactor(cfg CompactorConfig, provider llm.Provider, model string) *Com
 
 // ShouldCompact checks if the compactor should trigger based on the watermark threshold.
 func (cp *Compactor) ShouldCompact(currentTokens int) bool {
-	return IsAboveWatermark(currentTokens, cp.config.MaxTokens, cp.config.WatermarkRatio)
+	cp.mu.RLock()
+	cfg := cp.config
+	cp.mu.RUnlock()
+	return IsAboveWatermark(currentTokens, cfg.MaxTokens, cfg.WatermarkRatio)
 }
 
 // Compact performs the full checkpoint summarization and in-place history reduction.
 func (cp *Compactor) Compact(ctx context.Context, c *ConversationContext) error {
+	cp.mu.RLock()
+	cfg := cp.config
+	model := cp.model
+	provider := cp.provider
+	cp.mu.RUnlock()
+
 	messages := c.Messages()
 	if len(messages) <= 3 {
 		return fmt.Errorf("conversation history too short to compact (%d messages)", len(messages))
 	}
 
 	// 1. Calculate how many tokens we want to retain in the recent tail
-	retainTokenBudget := int(float64(cp.config.MaxTokens) * cp.config.RetainRatio)
+	retainTokenBudget := int(float64(cfg.MaxTokens) * cfg.RetainRatio)
 
 	// 2. Find the safe cut point that preserves recent turns and tool pairings
 	cutIndex := cp.findSafeCutIndex(messages, retainTokenBudget)
@@ -77,11 +88,11 @@ func (cp *Compactor) Compact(ctx context.Context, c *ConversationContext) error 
 	// 3. Build summarization payload and call the LLM
 	summarizerPayload := BuildCompactionMessages(olderMessages)
 	req := &llm.ChatRequest{
-		Model:   cp.model,
+		Model:   model,
 		Message: summarizerPayload,
 	}
 
-	resp, err := cp.provider.Generate(ctx, req)
+	resp, err := provider.Generate(ctx, req)
 	if err != nil {
 		return fmt.Errorf("summarization LLM call failed: %w", err)
 	}
@@ -145,6 +156,8 @@ func (cp *Compactor) findSafeCutIndex(messages []llm.Message, retainTokenBudget 
 
 // UpdateModel updates the model and provider when switching models dynamically.
 func (cp *Compactor) UpdateModel(model string, provider llm.Provider) {
+	cp.mu.Lock()
+	defer cp.mu.Unlock()
 	cp.model = model
 	cp.provider = provider
 }

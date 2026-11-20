@@ -23,5 +23,3 @@ type Sensor interface {
 	Type() string
 	Check(ctx context.Context) (Verdict, error)
 }
-
-

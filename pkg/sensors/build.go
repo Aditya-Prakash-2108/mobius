@@ -7,28 +7,26 @@ import (
 )
 
 type CommandSensor struct {
-    name string
-    cmd  string
-    dir  string
+	name string
+	cmd  string
+	dir  string
 }
 
 func NewCommandSensor(name, cmd, dir string) *CommandSensor {
-    return &CommandSensor{
-        name: name,
-        cmd:  cmd,
-        dir:  dir,
-    }
+	return &CommandSensor{
+		name: name,
+		cmd:  cmd,
+		dir:  dir,
+	}
 }
 
 func (s *CommandSensor) Name() string {
-    return s.name
+	return s.name
 }
-
 
 func (s *CommandSensor) Type() string {
-    return TypeComputational
+	return TypeComputational
 }
-
 
 func (s *CommandSensor) Check(ctx context.Context) (Verdict, error) {
 	start := time.Now()
@@ -36,21 +34,21 @@ func (s *CommandSensor) Check(ctx context.Context) (Verdict, error) {
 	cmd.Dir = s.dir
 
 	out, err := cmd.CombinedOutput()
-    duration := time.Since(start)
-    // 3. Did it pass?
-    if err != nil {
-        return Verdict{
-            SensorName: s.name,
-            Passed:     false,
-            Output:     string(out),
-            Retryable:  true,
-            Duration:   duration,
-        }, nil
-    }
-    return Verdict{
-        SensorName: s.name,
-        Passed:     true,
-        Output:     string(out),
-        Duration:   duration,
-    }, nil
+	duration := time.Since(start)
+	// 3. Did it pass?
+	if err != nil {
+		return Verdict{
+			SensorName: s.name,
+			Passed:     false,
+			Output:     string(out),
+			Retryable:  true,
+			Duration:   duration,
+		}, nil
+	}
+	return Verdict{
+		SensorName: s.name,
+		Passed:     true,
+		Output:     string(out),
+		Duration:   duration,
+	}, nil
 }

@@ -6,13 +6,9 @@ import (
 	"os"
 	"strings"
 
-	"mobius/pkg/agent"
-	"mobius/pkg/events"
 	"mobius/pkg/guides"
-	"mobius/pkg/llm"
+	"mobius/pkg/orchestrator"
 	"mobius/pkg/sensors"
-	"mobius/pkg/session"
-	"mobius/pkg/tools"
 
 	"github.com/charmbracelet/x/term"
 )
@@ -92,8 +88,9 @@ func readPrompt(prompt string) (string, bool) {
 	}
 }
 
-func StartREPL(sm *session.Manager, registry *tools.Registry, cfg *llm.Config, agent *agent.Agent, eventStore events.EventStore) {
-	PrintBanner(cfg.ActiveModel)
+func StartREPL(app *App) {
+	PrintBanner(app.Config.ActiveModel)
+	sm := app.Sessions
 
 	for {
 		input, ok := readPrompt("mobius > ")
@@ -117,11 +114,11 @@ func StartREPL(sm *session.Manager, registry *tools.Registry, cfg *llm.Config, a
 				if err != nil {
 					fmt.Printf("Error: %v\n", err)
 				} else {
-					fmt.Printf("Switched to session: '%s'\n", s.Name)
+					fmt.Printf("Switched to session: '%s'\n", s.Name())
 				}
 			}
 		case "/newchat":
-			handleNewChat(sm, registry, cfg, eventStore)
+			handleNewChat(app)
 		case "/models":
 			activeSession, err := sm.GetActive()
 			if err != nil {
@@ -129,7 +126,7 @@ func StartREPL(sm *session.Manager, registry *tools.Registry, cfg *llm.Config, a
 				continue
 			}
 			currentModel := activeSession.Agent.GetModel()
-			model, err := ShowModelMenu(cfg, currentModel)
+			model, err := ShowModelMenu(app.Config, currentModel)
 			if err != nil {
 				fmt.Printf("Error: %v\n", err)
 				continue
@@ -137,13 +134,21 @@ func StartREPL(sm *session.Manager, registry *tools.Registry, cfg *llm.Config, a
 			if model == "" || model == currentModel {
 				continue // User cancelled with Esc or re-selected current model
 			}
-			provider, err := cfg.GetProviderForModel(model)
+			provider, err := app.Config.GetProviderForModel(model)
 			if err != nil {
 				fmt.Printf("Error getting provider for %s: %v\n", model, err)
 				continue
 			}
-			pCost, cCost := cfg.GetPrices(model)
+			pCost, cCost := app.Config.GetPrices(model)
 			activeSession.Agent.SetModel(model, provider, pCost, cCost)
+			if ws, err := app.WorkspaceForSession(activeSession); err == nil {
+				ws.SetModel(orchestrator.ModelSpec{
+					Name:            model,
+					Provider:        provider,
+					PromptPrice:     pCost,
+					CompletionPrice: cCost,
+				})
+			}
 			fmt.Printf("Switched model to '%s'\n", model)
 		case "/init":
 			activeSession, err := sm.GetActive()
@@ -151,7 +156,7 @@ func StartREPL(sm *session.Manager, registry *tools.Registry, cfg *llm.Config, a
 				fmt.Printf("Error: %v\n", err)
 				continue
 			}
-			provider, err := cfg.GetProviderForModel(activeSession.Agent.GetModel())
+			provider, err := app.Config.GetProviderForModel(activeSession.Agent.GetModel())
 			if err != nil {
 				fmt.Printf("Error: %v\n", err)
 				continue
@@ -173,34 +178,37 @@ func StartREPL(sm *session.Manager, registry *tools.Registry, cfg *llm.Config, a
 				fmt.Printf("Error: %v\n", err)
 				continue
 			}
-			_ = RunGoal(activeSession, input)
+			_ = RunGoalAsync(app, activeSession, input)
 		}
 	}
 }
 
 // Helper to keep StartREPL tidy
-func handleNewChat(sm *session.Manager, registry *tools.Registry, cfg *llm.Config, eventStore events.EventStore) {
+func handleNewChat(app *App) {
+	sm := app.Sessions
 	if unstarted := sm.GetUnstarted(); unstarted != nil {
 		_, _ = sm.SwitchSession(unstarted.ID)
-		fmt.Printf("Reusing empty session '%s' (ID: %s).\n", unstarted.Name, unstarted.ID)
+		fmt.Printf("Reusing empty session '%s' (ID: %s).\n", unstarted.Name(), unstarted.ID)
 		return
 	}
 
-	provider, err := cfg.GetProviderForModel("")
+	provider, err := app.Config.GetProviderForModel("")
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
 		return
 	}
-	pCost, cCost := cfg.GetPrices(cfg.ActiveModel)
-	newAgent, err := agent.NewAgent(provider, registry, cfg.ActiveModel, pCost, cCost, eventStore)
+	spec := app.ActiveModelSpec(provider)
+	ws, err := orchestrator.NewWorkspace(context.Background(), "new-chat", app.RoleStore, app.BaseTools, spec, app.AgentFactory())
 	if err != nil {
-		fmt.Printf("Error creating agent: %v\n", err)
+		fmt.Printf("Error creating workspace: %v\n", err)
 		return
 	}
+	orch := ws.OrchestratorSession()
 	if agentsData, err := os.ReadFile("AGENTS.md"); err == nil {
-		newAgent.SetSensors(sensors.NewRegistryFromGuide(".", string(agentsData)))
+		orch.Agent.SetSensors(sensors.NewRegistryFromGuide(".", string(agentsData)))
 	}
-
-	newSess := sm.CreateSession("New Chat", newAgent)
-	fmt.Printf("Started new session '%s' (ID: %s)\n", newSess.Name, newSess.ID)
+	newSess := sm.CreateSession("New Chat", orch.Agent)
+	newSess.MarkStarted("New Chat")
+	app.Workspaces.Register(newSess.ID, ws)
+	fmt.Printf("Started new session '%s' (ID: %s)\n", newSess.Name(), newSess.ID)
 }

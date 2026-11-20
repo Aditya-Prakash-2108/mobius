@@ -12,17 +12,17 @@ import (
 )
 
 var ignoredDirs = map[string]bool{
-	".git":         true,
-	"node_modules": true,
-	"vendor":       true,
-	".mobius":      true,
-	"bin":          true,
-	"dist":         true,
-	"build":        true,
-	".idea":        true,
-	".vscode":      true,
+	".git":          true,
+	"node_modules":  true,
+	"vendor":        true,
+	".mobius":       true,
+	"bin":           true,
+	"dist":          true,
+	"build":         true,
+	".idea":         true,
+	".vscode":       true,
 	"__pycache__":   true,
-	".pytest_cache":true,
+	".pytest_cache": true,
 }
 
 // Known manifest or configuration files to look out for during scanning.

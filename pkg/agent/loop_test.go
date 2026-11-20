@@ -12,30 +12,13 @@ import (
 	"mobius/pkg/tools"
 )
 
-type mockSensor struct {
-	name   string
-	passed bool
-	output string
-}
-
-func (m *mockSensor) Name() string { return m.name }
-func (m *mockSensor) Type() string { return sensors.TypeComputational }
-func (m *mockSensor) Check(ctx context.Context) (sensors.Verdict, error) {
-	return sensors.Verdict{
-		SensorName: m.name,
-		Passed:     m.passed,
-		Output:     m.output,
-		Duration:   5 * time.Millisecond,
-	}, nil
-}
-
 type dummyTool struct {
 	name string
 }
 
-func (d *dummyTool) Name() string                               { return d.name }
-func (d *dummyTool) Description() string                        { return "dummy tool" }
-func (d *dummyTool) Schema() tools.ToolSchema                  { return tools.ToolSchema{Type: "object"} }
+func (d *dummyTool) Name() string             { return d.name }
+func (d *dummyTool) Description() string      { return "dummy tool" }
+func (d *dummyTool) Schema() tools.ToolSchema { return tools.ToolSchema{Type: "object"} }
 func (d *dummyTool) Execute(ctx context.Context, args string) (string, error) {
 	return "File edited successfully", nil
 }

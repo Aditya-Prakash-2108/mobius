@@ -47,6 +47,12 @@ func (a *Agent) runToolCalls(ctx context.Context, c *agentctx.ConversationContex
 		return false
 	}
 
+	var skipped []llm.ToolCall
+	if budget := a.toolCallBudget(step); budget > 0 && len(calls) > budget {
+		skipped = append([]llm.ToolCall(nil), calls[budget:]...)
+		calls = calls[:budget]
+	}
+
 	outcomes := make([]toolCallOutcome, len(calls))
 
 	if len(calls) == 1 {
@@ -70,7 +76,7 @@ func (a *Agent) runToolCalls(ctx context.Context, c *agentctx.ConversationContex
 			fileModified = true
 		}
 
-		fmt.Printf("[Tool] %s(%s)\n", tc.Function.Name, tc.Function.Arguments)
+		a.emitLine("[Tool] %s(%s)\n", tc.Function.Name, tc.Function.Arguments)
 
 		output := outcome.output
 		toolErr := outcome.toolErr
@@ -109,5 +115,24 @@ func (a *Agent) runToolCalls(ctx context.Context, c *agentctx.ConversationContex
 		}
 	}
 
+	for _, tc := range skipped {
+		note := "Not run: config/agent.toml step budget is already used for this turn. Answer from what you have."
+		c.AddToolResult(tc.ID, note)
+		a.emitLine("[Tool] %s skipped (step budget)\n", tc.Function.Name)
+	}
+
 	return fileModified
+}
+
+// toolCallBudget is how many tool calls this step may run.
+// Zero means the agent has no configured step limit.
+func (a *Agent) toolCallBudget(step int) int {
+	if a == nil || a.maxSteps <= 0 {
+		return 0
+	}
+	remaining := a.maxSteps - step + 1
+	if remaining < 1 {
+		return 1
+	}
+	return remaining
 }

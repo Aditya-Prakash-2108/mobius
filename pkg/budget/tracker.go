@@ -3,6 +3,7 @@ package budget
 import (
 	"fmt"
 	"mobius/pkg/llm"
+	"sync"
 )
 
 const USDToINRRate = 95
@@ -17,57 +18,79 @@ type CostTracker interface {
 
 // Tracker keeps a running total of tokens and calculates USD costs.
 type Tracker struct {
-	TotalPromptTokens     int
-	TotalCompletionTokens int
-	MaxCost               float64
+	mu sync.RWMutex
 
-	PricePerMillionPrompt     float64
-	PricePerMillionCompletion float64
+	totalPromptTokens     int
+	totalCompletionTokens int
+	maxCost               float64
+
+	pricePerMillionPrompt     float64
+	pricePerMillionCompletion float64
 }
 
 // NewTracker initializes a fresh tracker starting at 0 tokens.
 func NewTracker(maxCost, pricePrompt, priceComp float64) *Tracker {
 	return &Tracker{
-		MaxCost:                   maxCost,
-		PricePerMillionPrompt:     pricePrompt,
-		PricePerMillionCompletion: priceComp,
+		maxCost:                   maxCost,
+		pricePerMillionPrompt:     pricePrompt,
+		pricePerMillionCompletion: priceComp,
 	}
 }
 
 // Add tallies up the tokens from a single LLM generation.
 func (t *Tracker) Add(u llm.Usage) {
-	t.TotalPromptTokens += u.PromptTokens
-	t.TotalCompletionTokens += u.CompletionTokens
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.totalPromptTokens += u.PromptTokens
+	t.totalCompletionTokens += u.CompletionTokens
+}
+
+func (t *Tracker) currentCostUSDLocked() float64 {
+	promptCost := (float64(t.totalPromptTokens) / 1_000_000.0) * t.pricePerMillionPrompt
+	compCost := (float64(t.totalCompletionTokens) / 1_000_000.0) * t.pricePerMillionCompletion
+	return promptCost + compCost
+}
+
+func (t *Tracker) currentCostINRLocked() float64 {
+	return t.currentCostUSDLocked() * USDToINRRate
 }
 
 // CurrentCostUSD calculates the running total spend in USD.
 func (t *Tracker) CurrentCostUSD() float64 {
-	promptCost := (float64(t.TotalPromptTokens) / 1_000_000.0) * t.PricePerMillionPrompt
-	compCost := (float64(t.TotalCompletionTokens) / 1_000_000.0) * t.PricePerMillionCompletion
-	return promptCost + compCost
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.currentCostUSDLocked()
 }
 
 // CurrentCostINR converts the current USD spend into Indian Rupees.
 func (t *Tracker) CurrentCostINR() float64 {
-	return t.CurrentCostUSD() * USDToINRRate
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.currentCostINRLocked()
 }
 
 // Check aborts if we've spent more than the max allowed cost.
 func (t *Tracker) Check() error {
-	cost := t.CurrentCostUSD()
-	if cost > t.MaxCost {
-		return fmt.Errorf("budget exceeded: current cost $%.4f (₹%.2f) > max cost $%.2f", cost, t.CurrentCostINR(), t.MaxCost)
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	cost := t.currentCostUSDLocked()
+	if cost > t.maxCost {
+		return fmt.Errorf("budget exceeded: current cost $%.4f (₹%.2f) > max cost $%.2f", cost, t.currentCostINRLocked(), t.maxCost)
 	}
 	return nil
 }
 
 // Status formats a summary for the terminal showing both USD and INR.
 func (t *Tracker) Status() string {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
 	return fmt.Sprintf("[Budget] Tokens: %d In, %d Out | Cost: $%.5f (₹%.4f)",
-		t.TotalPromptTokens, t.TotalCompletionTokens, t.CurrentCostUSD(), t.CurrentCostINR())
+		t.totalPromptTokens, t.totalCompletionTokens, t.currentCostUSDLocked(), t.currentCostINRLocked())
 }
 
 func (t *Tracker) UpdatePrices(pricePrompt, priceComp float64) {
-	t.PricePerMillionPrompt = pricePrompt
-	t.PricePerMillionCompletion = priceComp
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.pricePerMillionPrompt = pricePrompt
+	t.pricePerMillionCompletion = priceComp
 }

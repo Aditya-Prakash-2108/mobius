@@ -74,17 +74,17 @@ func (l *ListDirTool) Execute(ctx context.Context, jsonArgs string) (string, err
 	}
 
 	var builder strings.Builder
-	builder.WriteString(fmt.Sprintf("Contents of %s:\n", targetPath))
+	fmt.Fprintf(&builder, "Contents of %s:\n", targetPath)
 
 	for _, entry := range entries {
 		if entry.IsDir() {
-			builder.WriteString(fmt.Sprintf("  [DIR]   %s/\n", entry.Name()))
+			fmt.Fprintf(&builder, "  [DIR]   %s/\n", entry.Name())
 		} else {
 			info, err := entry.Info()
 			if err != nil {
-				builder.WriteString(fmt.Sprintf("  [FILE]  %s\n", entry.Name()))
+				fmt.Fprintf(&builder, "  [FILE]  %s\n", entry.Name())
 			} else {
-				builder.WriteString(fmt.Sprintf("  [FILE]  %-25s (%d bytes)\n", entry.Name(), info.Size()))
+				fmt.Fprintf(&builder, "  [FILE]  %-25s (%d bytes)\n", entry.Name(), info.Size())
 			}
 		}
 	}

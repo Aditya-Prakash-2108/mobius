@@ -3,9 +3,11 @@ package session
 import (
 	"fmt"
 	"mobius/pkg/agent"
+	"sync"
 )
 
 type Manager struct {
+	mu       sync.RWMutex
 	sessions map[string]*Session
 	activeId string
 }
@@ -27,6 +29,8 @@ func NewManager(defaultSession *Session) *Manager {
 }
 
 func (m *Manager) GetActive() (*Session, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	session, exists := m.sessions[m.activeId]
 	if !exists {
 		return nil, fmt.Errorf("no active session found")
@@ -35,10 +39,14 @@ func (m *Manager) GetActive() (*Session, error) {
 }
 
 func (m *Manager) AddSession(session *Session) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.sessions[session.ID] = session
 }
 
 func (m *Manager) SwitchSession(sessionId string) (*Session, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	session, exists := m.sessions[sessionId]
 	if !exists {
 		return nil, fmt.Errorf("session '%s' not found", sessionId)
@@ -48,11 +56,13 @@ func (m *Manager) SwitchSession(sessionId string) (*Session, error) {
 }
 
 func (m *Manager) ListSession() []SessionInfo {
-	var list []SessionInfo
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	list := make([]SessionInfo, 0, len(m.sessions))
 	for _, s := range m.sessions {
 		list = append(list, SessionInfo{
 			ID:       s.ID,
-			Name:     s.Name,
+			Name:     s.Name(),
 			IsActive: s.ID == m.activeId,
 		})
 	}
@@ -62,14 +72,18 @@ func (m *Manager) ListSession() []SessionInfo {
 // CreateSession creates and switches to a new session
 func (m *Manager) CreateSession(name string, a *agent.Agent) *Session {
 	sess := NewSession(a.ThreadID(), name, a)
-	m.AddSession(sess)
+	m.mu.Lock()
+	m.sessions[sess.ID] = sess
 	m.activeId = sess.ID
+	m.mu.Unlock()
 	return sess
 }
 
 func (m *Manager) GetUnstarted() *Session {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	for _, s := range m.sessions {
-		if !s.Started {
+		if !s.Started() {
 			return s
 		}
 	}

@@ -50,8 +50,13 @@ mobius/
 * **Milestone 4**: Evaluation Test Bench & Concurrency (Goroutines, Channels, `sync.WaitGroup`, Worker Pools, Git Operations).
 * **Milestone 5**: CLI & Trajectory Inspector (CLI Flags, JSONL Streaming, Colored Terminal UX).
 
-## 5. Coding & Teaching Guidelines for the Agent (STRICT TUTOR MODE)
-* **User Writes the Code**: Do NOT modify or create code files directly on behalf of the user. Guide and teach from chat.
-* **Explain Concepts First**: Explain *what* we are building, *why* Go works that way, and provide code examples/explanations in chat for the user to write.
-* **Review & Debug**: Review what the user writes, explain compiler errors, and answer questions.
-* **Idiomatic Go**: Teach clean, standard-library-first Go practices.
+## 5. Engineering Guidelines
+* **Plan First, Build Incrementally**: Outline a short component plan before making multi-file edits, and build one cohesive piece at a time.
+* **Idiomatic Go**: Keep code clean, standard-library-first, race-free (`go test -race ./...`), and properly formatted (`make fmt`).
+* **Security & Isolation**: Enforce least-privilege tool scoping, workspace path confinement, secret redaction, and safe subprocess cleanup.
+* **Git Hygiene**: Never run `git commit`, `git push`, or modify git config unless explicitly asked.
+
+## Verification Commands
+Build: make build
+Test: make test-race
+Lint: make lint

@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -74,5 +76,44 @@ func TestRunToolCalls_Parallel(t *testing.T) {
 	}
 	if toolResults != 2 {
 		t.Fatalf("expected 2 tool results in context, got %d", toolResults)
+	}
+}
+
+func TestRunToolCalls_StopsAtStepBudget(t *testing.T) {
+	reg := tools.NewRegistry()
+	tool := &slowTool{name: "view_file"}
+	reg.Register(tool)
+
+	ag := &Agent{
+		threadID: "budget-test",
+		registry: reg,
+		maxSteps: 2,
+	}
+	var calls []llm.ToolCall
+	for i := 0; i < 5; i++ {
+		calls = append(calls, llm.ToolCall{
+			ID:   fmt.Sprintf("c%d", i),
+			Type: "function",
+			Function: llm.FunctionCall{
+				Name:      "view_file",
+				Arguments: fmt.Sprintf(`{"path":"%d"}`, i),
+			},
+		})
+	}
+
+	conv := agentctx.NewConversationContext("test")
+	ag.runToolCalls(context.Background(), conv, 1, calls)
+
+	if tool.started.Load() != 2 {
+		t.Fatalf("expected 2 tool executions under max_steps=2, got %d", tool.started.Load())
+	}
+	skipped := 0
+	for _, m := range conv.Messages() {
+		if m.Role == llm.RoleTool && strings.Contains(m.Content, "Not run") {
+			skipped++
+		}
+	}
+	if skipped != 3 {
+		t.Fatalf("expected 3 skipped tool results, got %d", skipped)
 	}
 }

@@ -19,8 +19,8 @@ func TestScanWorkspace(t *testing.T) {
 		"Dockerfile",
 		"LICENSE",
 		"scripts/run.sh",
-		"node_modules/package.json", 
-		".git/config",              
+		"node_modules/package.json",
+		".git/config",
 	}
 
 	for _, f := range files {

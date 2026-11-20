@@ -4,11 +4,12 @@ import (
 	"context"
 	"fmt"
 	"mobius/pkg/agent"
-	"mobius/pkg/agentctx"
 	"mobius/pkg/cli"
 	"mobius/pkg/events"
 	"mobius/pkg/guides"
 	"mobius/pkg/llm"
+	"mobius/pkg/orchestrator"
+	"mobius/pkg/roles"
 	"mobius/pkg/sensors"
 	"mobius/pkg/session"
 	"mobius/pkg/tools"
@@ -19,33 +20,29 @@ import (
 )
 
 func main() {
-
-	guidesPrompt := ""
-	if gs, err := guides.LoadFromWorkSpace("config/guides.toml", "."); err == nil {
-		guidesPrompt = gs.RenderSystemPrompt()
-	}
-
-	systemPrompt := agentctx.BuildSystemPrompt("", guidesPrompt)
-
 	_ = godotenv.Load()
 	registry := tools.NewDefaultRegistry(".")
 
-	// 1. Create the Shared Event Store
 	eventStore, err := events.NewFileEventStore(".mobius/events", 256)
 	if err != nil {
 		fmt.Printf("Error: Failed to init event store: %v\n", err)
 		os.Exit(1)
 	}
-	defer eventStore.Close() // Gracefully flushes all events when app exits!
+	defer eventStore.Close()
 
 	cfg, err := llm.LoadConfig("config/model_config.toml")
 	if err != nil {
-		// Fallback to root model_config.toml if present
 		cfg, err = llm.LoadConfig("model_config.toml")
 		if err != nil {
 			fmt.Printf("Error: Failed to load config: %v\n", err)
 			os.Exit(1)
 		}
+	}
+
+	roleStore, err := roles.Open(context.Background(), "roles")
+	if err != nil {
+		fmt.Printf("Error: Failed to load roles: %v\n", err)
+		os.Exit(1)
 	}
 
 	provider, err := cfg.GetProviderForModel("")
@@ -54,24 +51,37 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 2. Create Default Agent with the shared eventStore
 	pCost, cCost := cfg.GetPrices(cfg.ActiveModel)
-	defaultAgent, err := agent.NewAgent(provider, registry, cfg.ActiveModel, pCost, cCost, eventStore)
+	model := orchestrator.ModelSpec{
+		Name:            cfg.ActiveModel,
+		Provider:        provider,
+		PromptPrice:     pCost,
+		CompletionPrice: cCost,
+	}
+
+	factory := func(reg *tools.Registry, m orchestrator.ModelSpec) (*agent.Agent, error) {
+		return agent.NewAgent(m.Provider, reg, m.Name, m.PromptPrice, m.CompletionPrice, eventStore)
+	}
+
+	ctx := context.Background()
+	defaultWS, err := orchestrator.NewWorkspace(ctx, "default", roleStore, registry, model, factory)
 	if err != nil {
-		fmt.Printf("Error: Failed to create agent: %v\n", err)
+		fmt.Printf("Error: Failed to create workspace: %v\n", err)
 		os.Exit(1)
 	}
 
-	// 2b. Initialize sensors from AGENTS.md if present
+	defaultSess := defaultWS.OrchestratorSession()
 	if agentsData, err := os.ReadFile("AGENTS.md"); err == nil {
-		sensorReg := sensors.NewRegistryFromGuide(".", string(agentsData))
-		defaultAgent.SetSensors(sensorReg)
+		defaultSess.Agent.SetSensors(sensors.NewRegistryFromGuide(".", string(agentsData)))
 	}
-
-	defaultSess := session.NewSession(defaultAgent.ThreadID(), "default", defaultAgent, systemPrompt)
+	defaultSess.MarkStarted("default")
 	manager := session.NewManager(defaultSess)
 
-	// 3. One-shot CLI run if arguments passed
+	wsReg := orchestrator.NewWorkspaceRegistry()
+	wsReg.Register(defaultSess.ID, defaultWS)
+
+	app := cli.NewApp(manager, wsReg, roleStore, registry, cfg, eventStore)
+
 	if len(os.Args) > 1 {
 		if os.Args[1] == "init" {
 			targetDir := "."
@@ -89,10 +99,12 @@ func main() {
 		}
 
 		userInstruction := strings.Join(os.Args[1:], " ")
-		_ = cli.RunGoal(defaultSess, userInstruction)
+		if err := cli.RunGoal(app, defaultSess, userInstruction); err != nil {
+			os.Exit(1)
+		}
+		defaultWS.Close()
 		return
 	}
 
-	// 4. Start Interactive REPL
-	cli.StartREPL(manager, registry, cfg, defaultAgent, eventStore)
+	cli.StartInteractive(app)
 }

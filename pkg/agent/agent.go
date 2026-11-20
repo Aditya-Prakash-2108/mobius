@@ -12,10 +12,18 @@ import (
 	"mobius/pkg/tools"
 	"mobius/pkg/utils"
 	"strings"
+	"sync"
 	"time"
 )
 
+// LineHook receives formatted status lines for the REPL (default: fmt.Print).
+type LineHook func(text string)
+
+func defaultLineHook(text string) { fmt.Print(text) }
+
 type Agent struct {
+	mu sync.RWMutex
+
 	threadID       string
 	provider       llm.Provider
 	registry       *tools.Registry
@@ -26,9 +34,13 @@ type Agent struct {
 	timeout        time.Duration
 	toolDefs       []llm.ToolDefinition
 	tracker        budget.CostTracker
+	lineHook       LineHook
 	events         events.EventStore // EventStore
 	artifactStore  *artifact.Store
 	compactor      *agentctx.Compactor
+
+	notesMu sync.Mutex
+	notes   []string
 }
 
 func NewAgent(provider llm.Provider, registry *tools.Registry, model string, pricePrompt float64, priceComp float64, eventStore events.EventStore) (*Agent, error) {
@@ -93,11 +105,34 @@ func NewAgent(provider llm.Provider, registry *tools.Registry, model string, pri
 		timeout:       time.Duration(agentCfg.TimeoutSeconds) * time.Second,
 		toolDefs:      toolDefs, // Store once
 		tracker:       budgetTracker,
+		lineHook:      defaultLineHook,
 		events:        eventStore,
 		artifactStore: artStore,
 		compactor:     agentctx.NewCompactor(agentctx.DefaultCompactorConfig(), provider, model),
 	}
 	return agent, nil
+}
+
+func (a *Agent) emitLine(format string, args ...any) {
+	text := fmt.Sprintf(format, args...)
+	a.mu.RLock()
+	hook := a.lineHook
+	if hook == nil {
+		hook = defaultLineHook
+	}
+	a.mu.RUnlock()
+	hook(text)
+}
+
+// SetLineHook sets the status-line sink; nil restores the default (fmt.Print).
+func (a *Agent) SetLineHook(hook LineHook) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if hook == nil {
+		a.lineHook = defaultLineHook
+	} else {
+		a.lineHook = hook
+	}
 }
 
 func (a *Agent) Events() events.EventStore {
@@ -108,10 +143,50 @@ func (a *Agent) ThreadID() string {
 	return a.threadID
 }
 
+// Limits returns the step, cost, and time budget loaded from config/agent.toml.
+func (a *Agent) Limits() (steps int, maxCostUSD float64, timeout time.Duration) {
+	if a == nil {
+		return 0, 0, 0
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.maxSteps, a.maxCost, a.timeout
+}
+
+// RecordUsage adds one provider response to this agent's running spend.
+func (a *Agent) RecordUsage(u llm.Usage) {
+	if a == nil {
+		return
+	}
+	a.mu.RLock()
+	tracker := a.tracker
+	a.mu.RUnlock()
+	if tracker == nil {
+		return
+	}
+	tracker.Add(u)
+}
+
+// BudgetStatus returns the current budget summary string.
+func (a *Agent) BudgetStatus() string {
+	a.mu.RLock()
+	tracker := a.tracker
+	a.mu.RUnlock()
+	if tracker == nil {
+		return ""
+	}
+	return tracker.Status()
+}
+
 // GenerateTitle asks the LLM for a concise 3-4 word title for the session
 func (a *Agent) GenerateTitle(ctx context.Context, prompt string) string {
+	a.mu.RLock()
+	model := a.model
+	provider := a.provider
+	a.mu.RUnlock()
+
 	req := &llm.ChatRequest{
-		Model: a.model,
+		Model: model,
 		Message: []llm.Message{
 			{
 				Role:    llm.RoleUser,
@@ -120,7 +195,7 @@ func (a *Agent) GenerateTitle(ctx context.Context, prompt string) string {
 		},
 	}
 
-	resp, err := a.provider.Generate(ctx, req)
+	resp, err := provider.Generate(ctx, req)
 	if err != nil || strings.TrimSpace(resp.Content) == "" {
 		// Fallback: take first 4 words of the prompt
 		words := strings.Fields(prompt)
@@ -134,22 +209,62 @@ func (a *Agent) GenerateTitle(ctx context.Context, prompt string) string {
 }
 
 func (a *Agent) GetModel() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
 	return a.model
 }
 
 func (a *Agent) SetModel(model string, provider llm.Provider, pricePrompt, priceComp float64) {
+	a.mu.Lock()
 	a.model = model
 	a.provider = provider
-	a.tracker.UpdatePrices(pricePrompt, priceComp)
-	if a.compactor != nil {
-		a.compactor.UpdateModel(model, provider)
+	tracker := a.tracker
+	compactor := a.compactor
+	a.mu.Unlock()
+
+	if tracker != nil {
+		tracker.UpdatePrices(pricePrompt, priceComp)
+	}
+	if compactor != nil {
+		compactor.UpdateModel(model, provider)
 	}
 }
 
 func (a *Agent) SetSensors(sr *sensors.Registry) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	a.sensorRegistry = sr
 }
 
 func (a *Agent) Sensors() *sensors.Registry {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
 	return a.sensorRegistry
+}
+
+// PushNote queues a follow-up user message for the next safe drain point in Run.
+// Whitespace-only notes are rejected. The note does not touch the conversation until drained.
+func (a *Agent) PushNote(note string) bool {
+	if strings.TrimSpace(note) == "" {
+		return false
+	}
+	a.notesMu.Lock()
+	defer a.notesMu.Unlock()
+	a.notes = append(a.notes, note)
+	return true
+}
+
+func (a *Agent) drainNotes() []string {
+	a.notesMu.Lock()
+	defer a.notesMu.Unlock()
+	out := a.notes
+	a.notes = nil
+	return out
+}
+
+// HasPendingNotes reports whether PushNote has queued messages not yet drained by Run.
+func (a *Agent) HasPendingNotes() bool {
+	a.notesMu.Lock()
+	defer a.notesMu.Unlock()
+	return len(a.notes) > 0
 }
